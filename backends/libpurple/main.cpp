@@ -794,12 +794,15 @@ class SpectrumNetworkPlugin : public NetworkPlugin {
 			// Check if the PurpleChat is not stored in buddy list
 			PurpleChat *chat = purple_blist_find_chat_wrapped(account, roomName.c_str());
 			if (chat) {
+				LOG4CXX_INFO(logger, "CHAT FOUND");
 				comps = purple_chat_get_components_wrapped(chat);
 			}
 			else if (PURPLE_PLUGIN_PROTOCOL_INFO(gc->prpl)->chat_info_defaults != NULL) {
+				LOG4CXX_INFO(logger, "CHAT NOT FOUND");
 				if (CONFIG_STRING(config, "service.protocol") == "prpl-jabber") {
 					comps = PURPLE_PLUGIN_PROTOCOL_INFO(gc->prpl)->chat_info_defaults(gc, (roomName + "/" + nickname).c_str());
-				} else {
+				}
+				else {
 					comps = PURPLE_PLUGIN_PROTOCOL_INFO(gc->prpl)->chat_info_defaults(gc, roomName.c_str());
 				}
 			}
@@ -1454,6 +1457,7 @@ static void conv_present(PurpleConversation *conv) {
 		LOG4CXX_INFO(logger, "Conversation presented");
 		conv_chat_add_users(conv, PURPLE_CONV_CHAT_WRAPPED(conv)->in_room, TRUE);
 		const char *topic = purple_conv_chat_get_topic(PURPLE_CONV_CHAT_WRAPPED(conv));
+		LOG4CXX_INFO(logger, "topic: " << topic);
 		if (topic && *topic != '\0') {
 			conv_chat_topic_changed(conv, topic, PURPLE_CONV_CHAT_WRAPPED(conv)->who);
 		}
@@ -1925,6 +1929,8 @@ static void RoomlistProgress(PurpleRoomlist *list, gboolean in_progress)
 		GList *field;
 		int topicId = -1;
 		int usersId = -1;
+		int descriptionId = -1;
+		int roomId = -1;
 		int id = 0;
 		for (field = fields; field != NULL; field = field->next, id++) {
 			PurpleRoomlistField *f = (PurpleRoomlistField *) field->data;
@@ -1932,11 +1938,17 @@ static void RoomlistProgress(PurpleRoomlist *list, gboolean in_progress)
 				continue;
 			}
 			std::string fstring = f->name;
-			if (fstring == "topic") {
+			if (fstring == "id") {
+				roomId = id;
+			}
+			else if (fstring == "topic" || fstring == "name") {
 				topicId = id;
 			}
 			else if (fstring == "users") {
 				usersId = id;
+			}
+			else if (fstring == "type") {
+				descriptionId = id;
 			}
 			else {
 				LOG4CXX_INFO(logger, "Uknown RoomList field " << fstring);
@@ -1949,37 +1961,65 @@ static void RoomlistProgress(PurpleRoomlist *list, gboolean in_progress)
 		PurplePluginProtocolInfo *prpl_info = PURPLE_PLUGIN_PROTOCOL_INFO(plugin);
 		for (rooms = list->rooms; rooms != NULL; rooms = rooms->next) {
 			PurpleRoomlistRoom *room = (PurpleRoomlistRoom *)rooms->data;
-			if (room->type == PURPLE_ROOMLIST_ROOMTYPE_CATEGORY) continue;
-			std::string roomId = prpl_info && prpl_info->roomlist_room_serialize ?
-				prpl_info->roomlist_room_serialize(room)
-				: room->name;
-			np->m_rooms[np->m_accounts[list->account]].push_back(roomId);
+
+			std::string roomIdentifier = room->name;
+			if (roomId != -1) {
+				char *roomIdField = (char *) g_list_nth_data(purple_roomlist_room_get_fields(room), roomId);
+				if (roomIdField) {
+					roomIdentifier = std::string(roomIdField);
+				}
+			}
+			np->m_rooms[np->m_accounts[list->account]].push_back(roomIdentifier);
+			
+			std::string roomName = "";
+			int nestedLevel = 0;
+			PurpleRoomlistRoom *parentRoom = purple_roomlist_room_get_parent(room);
+			while (parentRoom != NULL) {
+				nestedLevel++;
+				parentRoom = purple_roomlist_room_get_parent(parentRoom);
+			}
+			LOG4CXX_INFO(logger, "nestedLevel " << nestedLevel);
+
+			if (nestedLevel > 0) {
+				std::string roomNamePrefix = std::string(nestedLevel, '-');
+				if (roomNamePrefix != "") {
+					roomNamePrefix = roomNamePrefix + "> ";
+				}
+				roomName = roomNamePrefix;
+			}
 
 			if (topicId == -1) {
-				m_topics.push_back(room->name);
+				roomName += room->name;
 			}
 			else {
 				char *topic = (char *) g_list_nth_data(purple_roomlist_room_get_fields(room), topicId);
 				if (topic) {
-					m_topics.push_back(topic);
+					roomName += topic;
 				}
-				else {
-					if (usersId) {
-						char *users = (char *) g_list_nth_data(purple_roomlist_room_get_fields(room), usersId);
-						if (users) {
-							m_topics.push_back(users);
-						}
-						else {
-							LOG4CXX_WARN(logger, "RoomList topic and users is NULL");
-							m_topics.push_back(room->name);
-						}
+				else if (usersId) {
+					char *users = (char *) g_list_nth_data(purple_roomlist_room_get_fields(room), usersId);
+					if (users) {
+						roomName += users;
 					}
 					else {
-						LOG4CXX_WARN(logger, "RoomList topic is NULL");
-						m_topics.push_back(room->name);
+						LOG4CXX_WARN(logger, "RoomList topic and users is NULL");
+						roomName += room->name;
 					}
 				}
+				else {
+					LOG4CXX_WARN(logger, "RoomList topic is NULL");
+					roomName += room->name;
+				}
 			}
+
+			if (descriptionId != -1) {
+				char *description = (char *) g_list_nth_data(purple_roomlist_room_get_fields(room), descriptionId);
+				if (description) {
+					roomName += " (" + std::string(description) + ")";
+				}
+			}
+			
+			m_topics.push_back(roomName);
 		}
 
 		std::string user = "";
